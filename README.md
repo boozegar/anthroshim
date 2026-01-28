@@ -8,31 +8,6 @@ Convert OpenAI Responses API payloads/streams into Anthropic Messages format.
 uv sync
 ```
 
-## CLI
-
-Convert a saved OpenAI response (or OpenAI `responses.create(input=...)` payload) to Anthropic `{system, messages}`:
-
-```bash
-uv run api-transformer openai-to-anthropic --in openai.json --out anthropic.json
-```
-
-Convert a newline-delimited JSON stream of OpenAI Responses streaming events into a newline-delimited JSON stream of Anthropic Messages streaming events:
-
-```bash
-uv run api-transformer openai-stream-to-anthropic-stream --in openai_events.ndjson --out anthropic_events.ndjson
-```
-
-## Library
-
-```python
-from api_transformer.openai_to_anthropic import convert_openai_to_anthropic
-from api_transformer.openai_stream_to_anthropic_stream import iter_anthropic_events
-
-anthropic_req = convert_openai_to_anthropic(openai_data)
-
-for event in iter_anthropic_events(openai_events_iterable, model="claude-sonnet-4-5"):
-    handle(event)
-```
 
 ## Server (Anthropic-compatible)
 
@@ -58,3 +33,31 @@ Optional request headers to override config:
 
 - `x-openai-api-key`
 - `x-openai-api-url`
+
+
+
+## CLI [ready to remove]
+
+Convert a saved OpenAI response (or OpenAI `responses.create(input=...)` payload) to Anthropic `{system, messages}`:
+
+```bash
+uv run api-transformer openai-to-anthropic --in openai.json --out anthropic.json
+```
+
+Convert a newline-delimited JSON stream of OpenAI Responses streaming events into a newline-delimited JSON stream of Anthropic Messages streaming events:
+
+```bash
+uv run api-transformer openai-stream-to-anthropic-stream --in openai_events.ndjson --out anthropic_events.ndjson
+```
+
+## Library
+
+```python
+from api_transformer.openai_to_anthropic import convert_openai_to_anthropic
+from api_transformer.openai_stream_to_anthropic_stream import iter_anthropic_events
+
+anthropic_req = convert_openai_to_anthropic(openai_data)
+
+for event in iter_anthropic_events(openai_events_iterable, model="claude-sonnet-4-5"):
+    handle(event)
+```
