@@ -1,8 +1,8 @@
 services:
   api-transformer:
-    image: ghcr.io/${GITHUB_REPOSITORY}:latest
+    image: ghcr.io/boozegar/anthroshim:latest
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file:
       - .env
     restart: unless-stopped
