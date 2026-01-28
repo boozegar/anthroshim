@@ -2,19 +2,19 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-Convert OpenAI Responses API payloads/streams into Anthropic Messages format.
+将 OpenAI Responses API 的 payload/流转换为 Anthropic Messages 格式。
 
-## Install (uv)
+## 安装（uv）
 
 ```bash
 uv sync
 ```
 
-## Server (Anthropic-compatible)
+## 服务器（Anthropic 兼容）
 
-Expose an Anthropic-compatible `POST /v1/messages` endpoint backed by OpenAI Responses.
+提供与 Anthropic 兼容的 `POST /v1/messages` 接口，后端转发到 OpenAI Responses。
 
-Create a `.env` file:
+创建 `.env` 文件：
 
 ```ini
 OPENAI_API_KEY=sk-...
@@ -24,52 +24,49 @@ ANTHROPIC_MODEL_DEFAULT=gpt-5.2-codex
 OPENAI_FORCE_STREAM=true
 ```
 
-Then run:
+启动：
 
 ```bash
 uv run uvicorn api_transformer.server:app --host 0.0.0.0 --port 8000
 ```
 
-Optional request headers to override config:
+可选请求头（覆盖配置）：
 
 - `x-openai-api-key`
 - `x-openai-api-url`
 
-## Docker (local)
+## Docker（本地）
 
 ```bash
 docker build -t api-transformer:local .
 docker run --env-file .env -p 8000:8000 api-transformer:local
 ```
 
-## Docker Compose (server)
+## Docker Compose（服务器）
 
-On the server, only `compose.yml` and `.env` are needed. Update flow:
+服务器只需要 `compose.yml` 和 `.env`。更新流程：
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-## GitHub Container Registry (GHCR)
+## GitHub 容器镜像（GHCR）
 
-A public image is built and pushed on every push to `main`:
+每次 push 到 `main` 会自动构建并推送公开镜像：
 
 - `ghcr.io/<owner>/<repo>:latest`
 - `ghcr.io/<owner>/<repo>:<sha>`
 
-
 ## CLI [ready to remove]
 
-## CLI [ready to remove]
-
-Convert a saved OpenAI response (or OpenAI `responses.create(input=...)` payload) to Anthropic `{system, messages}`:
+将保存的 OpenAI response（或 OpenAI `responses.create(input=...)` payload）转换为 Anthropic `{system, messages}`：
 
 ```bash
 uv run api-transformer openai-to-anthropic --in openai.json --out anthropic.json
 ```
 
-Convert a newline-delimited JSON stream of OpenAI Responses streaming events into a newline-delimited JSON stream of Anthropic Messages streaming events:
+将 OpenAI Responses 的 NDJSON 流转换为 Anthropic Messages 的 NDJSON 流：
 
 ```bash
 uv run api-transformer openai-stream-to-anthropic-stream --in openai_events.ndjson --out anthropic_events.ndjson
