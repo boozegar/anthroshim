@@ -1,18 +1,20 @@
 # Bare model map. Keys support exact names and wildcards (*, ?).
 "claude-opus-*":
-  model: gpt-5.2-codex
+  model: gpt-5.2 #$1.75/$14 
   reasoning:
     effort: high
 
 
 "claude-sonnet-*":
-  model: gpt-5.2-codex
+  model: gpt-5.1 #$1.25/$10
   reasoning:
     effort: medium
+
 
 "claude-haiku-*":
-  model: gpt-5.1-codex-mini
+  model: gpt-5-mini #$1.25/$10
   reasoning:
-    effort: medium
+    effort: high
 
-"*": gpt-5.2-codex
+
+

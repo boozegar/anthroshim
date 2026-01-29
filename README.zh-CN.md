@@ -1,70 +1,38 @@
-# api-transformer
+# anthroshim
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-将 OpenAI Responses API 的 payload/流转换为 Anthropic Messages 格式。
-
-## 安装（uv）
-
-```bash
-uv sync
-```
-
-## 服务器（Anthropic 兼容）
-
+将 上游OpenAI Responses API 的 payload/流转换为 Anthropic Messages 格式。
 提供与 Anthropic 兼容的 `POST /v1/messages` 接口，后端转发到 OpenAI Responses。
 
-创建 `.env` 文件：
-
-```ini
-OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-非密钥配置放在 `model-map.yml`。
-
-启动：
+## 服务器部署 
 
 ```bash
-uv run uvicorn api_transformer.server:app --host 0.0.0.0 --port 8000
+mkdir anthroshim
+cd anthroshim
 ```
 
-可选请求头（覆盖配置）：
 
-- `x-openai-api-key`
-- `x-openai-api-url`
+创建 [.env](.template.env) 、 [model-map.yml](model-map.yml)和  [compose.yml](compose.yml)
 
-## Docker（本地）
+> .env需自己填写，其余复制即可
+> compose.yml 端口自己选择 
 
-```bash
-docker build -t api-transformer:local .
-docker run --env-file .env -p 8000:8000 api-transformer:local
-```
+ 
 
-## Docker Compose（服务器）
-
-服务器只需要 `compose.yml` 和 `.env`。更新流程：
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-## GitHub 容器镜像（GHCR）
+更新 
+```bash
+docker compose pull
+docker compose down
+docker compose up -d
 
-每次 push 到 `main` 会自动构建并推送公开镜像：
-
-- `ghcr.io/<owner>/<repo>:latest`
-- `ghcr.io/<owner>/<repo>:<sha>`
-
-## Library
-
-```python
-from api_transformer.openai_to_anthropic import convert_openai_to_anthropic
-from api_transformer.openai_stream_to_anthropic_stream import iter_anthropic_events
-
-anthropic_req = convert_openai_to_anthropic(openai_data)
-
-for event in iter_anthropic_events(openai_events_iterable, model="claude-sonnet-4-5"):
-    handle(event)
 ```
+
+
+
