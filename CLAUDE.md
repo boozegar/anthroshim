@@ -5,16 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development commands
 
 - Install deps (uv): `uv sync`
-- Run CLI: `uv run api-transformer --help`
-- Convert OpenAI response/input to Anthropic: `uv run api-transformer openai-to-anthropic --in openai.json --out anthropic.json`
-- Convert OpenAI streaming NDJSON to Anthropic NDJSON: `uv run api-transformer openai-stream-to-anthropic-stream --in openai_events.ndjson --out anthropic_events.ndjson`
 - Run tests: `uv run pytest`
 - Run a single test: `uv run pytest tests/test_openai_stream_to_anthropic_stream.py -k test_text_stream_basic`
 - Run server (Anthropic-compatible): `uv run uvicorn api_transformer.server:app --host 0.0.0.0 --port 8000`
 
 ## Architecture overview
 
-- `src/api_transformer/cli.py` is the entrypoint for the `api-transformer` console script; it wires file I/O to the conversion helpers.
 - `src/api_transformer/openai_to_anthropic.py` converts OpenAI Responses payloads (input, response, or output items) into Anthropic Messages request shape.
 - `src/api_transformer/openai_stream_to_anthropic_stream.py` converts OpenAI streaming events to Anthropic streaming events, including SSE parsing/formatting helpers.
 - `src/api_transformer/anthropic_to_openai.py` converts Anthropic Messages requests into OpenAI Responses payloads, including tools/tool_choice mapping.

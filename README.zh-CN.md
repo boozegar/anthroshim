@@ -57,20 +57,6 @@ docker compose up -d
 - `ghcr.io/<owner>/<repo>:latest`
 - `ghcr.io/<owner>/<repo>:<sha>`
 
-## CLI [ready to remove]
-
-将保存的 OpenAI response（或 OpenAI `responses.create(input=...)` payload）转换为 Anthropic `{system, messages}`：
-
-```bash
-uv run api-transformer openai-to-anthropic --in openai.json --out anthropic.json
-```
-
-将 OpenAI Responses 的 NDJSON 流转换为 Anthropic Messages 的 NDJSON 流：
-
-```bash
-uv run api-transformer openai-stream-to-anthropic-stream --in openai_events.ndjson --out anthropic_events.ndjson
-```
-
 ## Library
 
 ```python

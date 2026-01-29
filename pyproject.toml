@@ -16,9 +16,6 @@ dependencies = [
   "uvicorn>=0.27.0",
 ]
 
-[project.scripts]
-api-transformer = "api_transformer.cli:main"
-
 [build-system]
 requires = ["hatchling>=1.24.0"]
 build-backend = "hatchling.build"

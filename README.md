@@ -58,22 +58,6 @@ A public image is built and pushed on every push to `main`:
 - `ghcr.io/<owner>/<repo>:<sha>`
 
 
-## CLI [ready to remove]
-
-## CLI [ready to remove]
-
-Convert a saved OpenAI response (or OpenAI `responses.create(input=...)` payload) to Anthropic `{system, messages}`:
-
-```bash
-uv run api-transformer openai-to-anthropic --in openai.json --out anthropic.json
-```
-
-Convert a newline-delimited JSON stream of OpenAI Responses streaming events into a newline-delimited JSON stream of Anthropic Messages streaming events:
-
-```bash
-uv run api-transformer openai-stream-to-anthropic-stream --in openai_events.ndjson --out anthropic_events.ndjson
-```
-
 ## Library
 
 ```python
