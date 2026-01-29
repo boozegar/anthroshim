@@ -19,10 +19,9 @@ Create a `.env` file:
 ```ini
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://api.openai.com/v1
-ANTHROPIC_MODEL_MAP={"claude-sonnet-4-5":"gpt-5.2-codex"}
-ANTHROPIC_MODEL_DEFAULT=gpt-5.2-codex
-OPENAI_FORCE_STREAM=true
 ```
+
+Non-secret configuration lives in `model-map.yml`.
 
 Then run:
 

@@ -1,0 +1,18 @@
+# Bare model map. Keys support exact names and wildcards (*, ?).
+"claude-opus-*":
+  model: gpt-5.2-codex
+  reasoning:
+    effort: high
+
+
+"claude-sonnet-*":
+  model: gpt-5.2-codex
+  reasoning:
+    effort: medium
+
+"claude-haiku-*":
+  model: gpt-5.1-codex-mini
+  reasoning:
+    effort: medium
+
+"*": gpt-5.2-codex

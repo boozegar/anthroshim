@@ -4,16 +4,17 @@ import json
 import logging
 import os
 import uuid
+import fnmatch
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import httpx
+import yaml
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from dotenv import load_dotenv
 
 from .anthropic_to_openai import convert_anthropic_to_openai_request
-from .config import AppConfig, config_to_public_dict, load_config, save_config, update_config
 from .openai_stream_to_anthropic_stream import (
     iter_anthropic_events,
     iter_anthropic_sse_lines,
@@ -25,6 +26,66 @@ from .openai_to_anthropic import openai_items_to_anthropic_messages
 Json = Dict[str, Any]
 
 load_dotenv()
+
+_MODEL_MAP_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _model_map_path() -> Path:
+    return Path("model-map.yml")
+
+
+def _get_model_map() -> Dict[str, Any]:
+    global _MODEL_MAP_CACHE
+    if _MODEL_MAP_CACHE is not None:
+        return _MODEL_MAP_CACHE
+
+    path = _model_map_path()
+    if not path.exists():
+        _MODEL_MAP_CACHE = {}
+        return _MODEL_MAP_CACHE
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.exception("failed to read model map path=%s", str(path))
+        _MODEL_MAP_CACHE = {}
+        return _MODEL_MAP_CACHE
+
+    try:
+        data = yaml.safe_load(raw) if raw.strip() else None
+    except Exception as exc:
+        logger.exception("failed to parse model map yaml path=%s", str(path))
+        _MODEL_MAP_CACHE = {}
+        return _MODEL_MAP_CACHE
+
+    if not isinstance(data, dict):
+        _MODEL_MAP_CACHE = {}
+        return _MODEL_MAP_CACHE
+
+    # Allow optional wrapper for compatibility, but default is a bare mapping.
+    if isinstance(data.get("model_map"), dict):
+        data = data.get("model_map")
+    elif isinstance(data.get("api_transformer_config"), dict):
+        inner = data.get("api_transformer_config")
+        if isinstance(inner, dict) and isinstance(inner.get("model_map"), dict):
+            data = inner.get("model_map")
+
+    if not isinstance(data, dict):
+        _MODEL_MAP_CACHE = {}
+        return _MODEL_MAP_CACHE
+
+    out: Dict[str, Any] = {}
+    for k, v in data.items():
+        if not isinstance(k, str) or not k:
+            continue
+        if isinstance(v, str) and v:
+            out[k] = v
+            continue
+        if isinstance(v, dict) and v:
+            out[k] = v
+
+    _MODEL_MAP_CACHE = out
+    return _MODEL_MAP_CACHE
 
 
 def _get_log_level() -> int:
@@ -56,7 +117,12 @@ def _configure_logging() -> logging.Logger:
 
 
 logger = _configure_logging()
-LOG_PAYLOADS = os.getenv("TRANSFORMER_LOG_PAYLOADS", "").lower() in {"1", "true", "yes", "on"}
+LOG_PAYLOADS = os.getenv("TRANSFORMER_LOG_PAYLOADS", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 LOG_MAX_CHARS = int(os.getenv("TRANSFORMER_LOG_MAX_CHARS", "4000"))
 
 
@@ -70,7 +136,11 @@ async def create_message(
     x_openai_api_key: Optional[str] = Header(default=None),
     x_openai_api_url: Optional[str] = Header(default=None),
 ) -> Any:
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        logger.warning("invalid json body", exc_info=exc)
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
@@ -78,9 +148,16 @@ async def create_message(
 
     key, base_url = _get_openai_config(x_openai_api_key, x_openai_api_url)
     openai_req = convert_anthropic_to_openai_request(payload)
-    openai_req["model"] = _map_model(openai_req.get("model"))
+    mapped_model, mapped_extra = _map_model_and_extras(openai_req.get("model"))
+    openai_req["model"] = mapped_model
+    if isinstance(mapped_extra, dict) and mapped_extra:
+        _deep_merge_inplace(openai_req, mapped_extra)
     if not openai_req.get("model"):
         raise HTTPException(status_code=400, detail="Missing model")
+
+    # Force stateless Responses API mode (equivalent to stateful=false).
+    openai_req["store"] = False
+
     if _force_stream():
         openai_req["stream"] = True
 
@@ -108,30 +185,63 @@ async def create_message(
     return JSONResponse(out)
 
 
-async def _stream_openai_to_anthropic(url: str, headers: Json, openai_req: Json) -> StreamingResponse:
+async def _stream_openai_to_anthropic(
+    url: str, headers: Json, openai_req: Json
+) -> StreamingResponse:
     openai_events = await _fetch_openai_stream_events(url, headers, openai_req)
     _log_json("openai.stream.events", openai_events)
-    anth_events = list(iter_anthropic_events(openai_events, model=openai_req.get("model") or "unknown"))
+    anth_events = list(
+        iter_anthropic_events(openai_events, model=openai_req.get("model") or "unknown")
+    )
     _log_json("anthropic.stream.events", anth_events)
-    return StreamingResponse(iter_anthropic_sse_lines(anth_events), media_type="text/event-stream")
+    return StreamingResponse(
+        iter_anthropic_sse_lines(anth_events), media_type="text/event-stream"
+    )
 
 
-async def _stream_openai_to_anthropic_message(url: str, headers: Json, openai_req: Json) -> Json:
+async def _stream_openai_to_anthropic_message(
+    url: str, headers: Json, openai_req: Json
+) -> Json:
     openai_events = await _fetch_openai_stream_events(url, headers, openai_req)
     _log_json("openai.stream.events", openai_events)
     for ev in reversed(openai_events):
-        if ev.get("type") in {"response.completed", "response.incomplete", "response.failed"}:
+        if ev.get("type") in {
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        }:
             resp = ev.get("response")
             if isinstance(resp, dict):
                 return resp
-    raise HTTPException(status_code=502, detail="Upstream stream did not include response object")
+    raise HTTPException(
+        status_code=502, detail="Upstream stream did not include response object"
+    )
 
 
-async def _fetch_openai_stream_events(url: str, headers: Json, openai_req: Json) -> list[Json]:
+async def _fetch_openai_stream_events(
+    url: str, headers: Json, openai_req: Json
+) -> list[Json]:
     async with httpx.AsyncClient(timeout=None) as client:
-        resp = await client.post(url, headers=headers, json=openai_req)
+        try:
+            resp = await client.post(url, headers=headers, json=openai_req)
+        except httpx.TimeoutException as exc:
+            logger.exception("openai.request timeout url=%s", url)
+            raise HTTPException(
+                status_code=504, detail=f"Upstream timeout: {exc}"
+            ) from exc
+        except httpx.RequestError as exc:
+            logger.exception("openai.request error url=%s", url)
+            raise HTTPException(
+                status_code=502, detail=f"Upstream connection error: {exc}"
+            ) from exc
         if resp.status_code >= 400:
             text = await resp.aread()
+            logger.warning(
+                "openai.response error status=%s url=%s body=%s",
+                resp.status_code,
+                url,
+                text[:500].decode("utf-8", errors="replace"),
+            )
             raise HTTPException(
                 status_code=resp.status_code,
                 detail=text.decode("utf-8", errors="replace"),
@@ -147,6 +257,7 @@ def _get_openai_config(
 ) -> tuple[str, str]:
     key = header_key or os.getenv("OPENAI_API_KEY")
     if not key:
+        logger.error("Missing OPENAI_API_KEY")
         raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY")
     base_url = header_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
     return key, base_url.rstrip("/")
@@ -162,50 +273,71 @@ def _force_stream() -> bool:
     return os.getenv("OPENAI_FORCE_STREAM", "").lower() in {"1", "true", "yes", "on"}
 
 
-def _map_model(model: Optional[str]) -> Optional[str]:
+def _map_model_and_extras(model: Optional[str]) -> Tuple[Optional[str], Dict[str, Any]]:
     if not model:
-        return None
-    mapping = _load_model_map()
+        return None, {}
+    mapping: Dict[str, Any] = dict(_get_model_map())
+
+    # 1) Exact match
     if model in mapping:
-        return mapping[model]
+        return _normalize_model_map_value(model, mapping[model])
+
+    # 2) Best wildcard match (excluding the catch-all "*")
+    best_key: Optional[str] = None
+    best_score: Tuple[int, int] = (-1, -1)
+    for k in mapping.keys():
+        if not isinstance(k, str) or not k or k == "*":
+            continue
+        if "*" not in k and "?" not in k:
+            continue
+        if fnmatch.fnmatchcase(model, k):
+            # Prefer more specific patterns (more non-wildcard chars, then longer pattern).
+            non_wild = len(k.replace("*", "").replace("?", ""))
+            score = (non_wild, len(k))
+            if score > best_score:
+                best_key = k
+                best_score = score
+
+    if best_key is not None:
+        return _normalize_model_map_value(model, mapping[best_key])
+
+    # 3) Catch-all
     if "*" in mapping:
-        return mapping["*"]
-    default = os.getenv("ANTHROPIC_MODEL_DEFAULT")
-    return default or model
+        return _normalize_model_map_value(model, mapping["*"])
+
+    return model, {}
 
 
-def _load_model_map() -> Dict[str, str]:
-    raw = os.getenv("ANTHROPIC_MODEL_MAP")
-    if not raw:
-        return {}
-    try:
-        data = json.loads(raw)
-    except Exception:
-        data = _parse_model_map_pairs(raw)
-    if not isinstance(data, dict):
-        return {}
-    out: Dict[str, str] = {}
-    for k, v in data.items():
-        if isinstance(k, str) and isinstance(v, str):
-            out[k] = v
-    return out
+def _normalize_model_map_value(
+    requested_model: str, value: Any
+) -> Tuple[str, Dict[str, Any]]:
+    # String value means: just replace the model.
+    if isinstance(value, str) and value:
+        return value, {}
+
+    # Dict value means: {"model": "...", ...additional openai fields...}
+    if isinstance(value, dict):
+        out_model = value.get("model")
+        model_str = (
+            out_model if isinstance(out_model, str) and out_model else requested_model
+        )
+        extra = {k: v for k, v in value.items() if k != "model"}
+        return model_str, extra
+
+    return requested_model, {}
+
+
+def _deep_merge_inplace(base: Dict[str, Any], updates: Dict[str, Any]) -> None:
+    for k, v in updates.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge_inplace(base[k], v)
+        else:
+            base[k] = v
 
 
 def _parse_model_map_pairs(raw: str) -> Dict[str, str]:
-    # Accept "a=b,b=c" or "a:b;b:c" fallback formats.
-    pairs = []
-    for chunk in raw.replace(";", ",").split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if "=" in chunk:
-            k, v = chunk.split("=", 1)
-        elif ":" in chunk:
-            k, v = chunk.split(":", 1)
-        else:
-            continue
-        pairs.append((k.strip(), v.strip()))
-    return {k: v for k, v in pairs if k and v}
+    # Deprecated: env-based model map parsing was removed.
+    return {}
 
 
 def _openai_response_to_anthropic_message(resp: Json) -> Json:
@@ -228,7 +360,9 @@ def _openai_response_to_anthropic_message(resp: Json) -> Json:
         }
 
     return {
-        "id": resp.get("id") if isinstance(resp, dict) and resp.get("id") else f"msg_{uuid.uuid4().hex}",
+        "id": resp.get("id")
+        if isinstance(resp, dict) and resp.get("id")
+        else f"msg_{uuid.uuid4().hex}",
         "type": "message",
         "role": "assistant",
         "content": content,
@@ -248,7 +382,10 @@ def _openai_stop_reason(resp: Json) -> str:
         out = resp.get("output")
         if isinstance(out, list) and out:
             last = out[-1]
-            if isinstance(last, dict) and last.get("type") in {"function_call", "custom_tool_call"}:
+            if isinstance(last, dict) and last.get("type") in {
+                "function_call",
+                "custom_tool_call",
+            }:
                 return "tool_use"
     return "end_turn"
 
