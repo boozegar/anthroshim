@@ -36,6 +36,8 @@ class _StreamState:
     last_emitted_block_type: Optional[str] = None
     response_usage: Optional[Json] = None
     stop_reason: Optional[str] = None
+    reasoning_summary: str = ""
+    reasoning_emitted: bool = False
 
 
 def iter_anthropic_events(
@@ -43,6 +45,7 @@ def iter_anthropic_events(
     *,
     model: str = "unknown",
     message_id: Optional[str] = None,
+    keep_reasoning_summary: bool = False,
 ) -> Iterator[Json]:
     """Convert OpenAI Responses streaming events into Anthropic Messages streaming events.
 
@@ -50,7 +53,7 @@ def iter_anthropic_events(
     Output: iterable of Anthropic SSE event payloads (dicts with `type`).
 
     Notes:
-    - OpenAI `reasoning_*` stream events are dropped.
+    - OpenAI `reasoning_*` stream events are dropped (except reasoning_summary when enabled).
     - Content blocks are emitted sequentially (no interleaving deltas across blocks).
     - Tool call inputs are streamed via `input_json_delta` partial JSON.
     """
@@ -65,7 +68,24 @@ def iter_anthropic_events(
             continue
         et = ev.get("type")
 
-        # Drop reasoning stream events by default.
+        if isinstance(et, str) and et.startswith("response.reasoning_summary"):
+            if not keep_reasoning_summary:
+                continue
+            if et.endswith(".delta"):
+                delta = ev.get("delta")
+                if delta:
+                    st.reasoning_summary += str(delta)
+            elif et.endswith(".done"):
+                summary = ev.get("summary") or ev.get("text") or ev.get("delta")
+                if summary:
+                    st.reasoning_summary = str(summary)
+            else:
+                summary = ev.get("summary") or ev.get("text")
+                if summary:
+                    st.reasoning_summary = str(summary)
+            continue
+
+        # Drop other reasoning stream events by default.
         if isinstance(et, str) and et.startswith("response.reasoning"):
             continue
 
@@ -80,6 +100,11 @@ def iter_anthropic_events(
         if et == "response.output_item.added":
             item = ev.get("item") or {}
             itype = item.get("type")
+            if itype == "reasoning" and keep_reasoning_summary:
+                summary = item.get("summary") or item.get("text")
+                if summary:
+                    st.reasoning_summary = str(summary)
+                continue
             if itype == "function_call":
                 item_id = str(item.get("id") or ev.get("item_id") or "")
                 st.tool_calls[item_id] = _ToolCallState(
@@ -262,6 +287,10 @@ def iter_anthropic_events(
             resp = ev.get("response") or {}
             if isinstance(resp, dict):
                 st.response_usage = resp.get("usage")
+                if keep_reasoning_summary and not st.reasoning_summary:
+                    summary = resp.get("reasoning_summary")
+                    if isinstance(summary, str) and summary.strip():
+                        st.reasoning_summary = summary
                 inc = resp.get("incomplete_details")
                 if isinstance(inc, dict) and inc.get("reason") == "max_tokens":
                     st.stop_reason = "max_tokens"
@@ -279,6 +308,9 @@ def iter_anthropic_events(
 
             # Close any active block and end message.
             yield from _close_active_block(st)
+            if keep_reasoning_summary and st.reasoning_summary and not st.reasoning_emitted:
+                yield from _emit_thinking_block(st, st.reasoning_summary)
+                st.reasoning_emitted = True
             yield from _ensure_message_started(st)
             usage = {}
             if (
@@ -297,6 +329,9 @@ def iter_anthropic_events(
     # If stream ends without an explicit completed event, close best-effort.
     if st.started:
         yield from _close_active_block(st)
+        if keep_reasoning_summary and st.reasoning_summary and not st.reasoning_emitted:
+            yield from _emit_thinking_block(st, st.reasoning_summary)
+            st.reasoning_emitted = True
         yield {
             "type": "message_delta",
             "delta": {
@@ -480,4 +515,36 @@ def _close_active_block(st: _StreamState) -> List[Json]:
     if st.tool_queue and st.last_emitted_block_type == "tool_use":
         st.tool_queue.pop(0)
 
+    return out
+
+
+def _emit_thinking_block(st: _StreamState, summary: str) -> List[Json]:
+    text = str(summary or "").strip()
+    if not text:
+        return []
+    out: List[Json] = []
+    out.extend(_ensure_message_started(st))
+    out.extend(_close_active_block(st))
+    idx = st.content_index
+    st.content_index += 1
+    st.last_emitted_block_type = "thinking"
+    out.append(
+        {
+            "type": "content_block_start",
+            "index": idx,
+            "content_block": {
+                "type": "thinking",
+                "thinking": "",
+                "signature": "",
+            },
+        }
+    )
+    out.append(
+        {
+            "type": "content_block_delta",
+            "index": idx,
+            "delta": {"type": "thinking_delta", "thinking": text},
+        }
+    )
+    out.append({"type": "content_block_stop", "index": idx})
     return out

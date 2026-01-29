@@ -13,6 +13,7 @@ def convert_openai_to_anthropic(
     mode: str = "auto",
     keep_reasoning: bool = False,
     keep_unknown: bool = False,
+    keep_reasoning_summary: bool = False,
 ) -> Json:
     """Convert OpenAI Responses API payloads into Anthropic Messages request shape.
 
@@ -52,6 +53,7 @@ def convert_openai_to_anthropic(
         instructions=instructions,
         keep_reasoning=keep_reasoning,
         keep_unknown=keep_unknown,
+        keep_reasoning_summary=keep_reasoning_summary,
     )
 
     out: Json = {"messages": messages}
@@ -66,6 +68,7 @@ def openai_items_to_anthropic_messages(
     instructions: Optional[str] = None,
     keep_reasoning: bool = False,
     keep_unknown: bool = False,
+    keep_reasoning_summary: bool = False,
 ) -> Tuple[Optional[Union[str, List[Json]]], List[Json]]:
     """Convert OpenAI item list to Anthropic Messages `messages` array.
 
@@ -91,8 +94,13 @@ def openai_items_to_anthropic_messages(
         t = item.get("type")
 
         if t == "reasoning":
-            if keep_reasoning:
-                ensure_message("assistant")["content"].append({"type": "text", "text": "[openai_reasoning]"})
+            summary = _extract_reasoning_summary(item)
+            if keep_reasoning_summary and summary:
+                ensure_message("assistant")["content"].append(_thinking_block(summary))
+            elif keep_reasoning:
+                ensure_message("assistant")["content"].append(
+                    {"type": "text", "text": "[openai_reasoning]"}
+                )
             continue
 
         if t == "message" or (t is None and "role" in item and "content" in item):
@@ -268,3 +276,18 @@ def _extract_openai_text(content: Any) -> Optional[str]:
         joined = "".join(texts).strip()
         return joined or None
     return str(content)
+
+
+def _extract_reasoning_summary(item: Json) -> Optional[str]:
+    summary = item.get("summary") or item.get("text")
+    if isinstance(summary, str) and summary.strip():
+        return summary
+    return None
+
+
+def _thinking_block(summary: str) -> Json:
+    return {
+        "type": "thinking",
+        "thinking": str(summary),
+        "signature": "",
+    }

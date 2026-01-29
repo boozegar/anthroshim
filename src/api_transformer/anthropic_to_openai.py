@@ -8,7 +8,12 @@ from typing import Any, Dict, Iterable, List, Optional
 Json = Dict[str, Any]
 
 
-def convert_anthropic_to_openai_request(payload: Json) -> Json:
+def convert_anthropic_to_openai_request(
+    payload: Json,
+    *,
+    thinking_enabled: bool = False,
+    thinking_config: Optional[Json] = None,
+) -> Json:
     """Convert Anthropic Messages request into OpenAI Responses request payload."""
 
     if not isinstance(payload, dict):
@@ -45,6 +50,9 @@ def convert_anthropic_to_openai_request(payload: Json) -> Json:
     stream = payload.get("stream")
     if isinstance(stream, bool):
         out["stream"] = stream
+
+    if thinking_enabled and isinstance(thinking_config, dict) and thinking_config:
+        out["reasoning"] = _merge_reasoning(out.get("reasoning"), thinking_config)
 
     return out
 
@@ -284,3 +292,40 @@ def _openai_image_url_object() -> bool:
     # Some upstreams expect image_url as a string, not {"url": "..."}.
     raw = os.getenv("OPENAI_IMAGE_URL_OBJECT", "false").lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+
+def _merge_include(existing: Any, additions: Iterable[str]) -> List[str]:
+    seen = set()
+    merged: List[str] = []
+
+    def append_unique(value: Optional[str]) -> None:
+        if not isinstance(value, str):
+            return
+        if value in seen:
+            return
+        seen.add(value)
+        merged.append(value)
+
+    if isinstance(existing, list):
+        for item in existing:
+            append_unique(item)
+
+    for item in additions:
+        append_unique(item)
+
+    return merged
+
+
+def _merge_reasoning(existing: Any, updates: Any) -> Json:
+    if not isinstance(updates, dict) or not updates:
+        return existing if isinstance(existing, dict) else {}
+    if not isinstance(existing, dict) or not existing:
+        return dict(updates)
+    merged = dict(existing)
+    for k, v in updates.items():
+        if isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = _merge_reasoning(merged[k], v)
+        else:
+            merged[k] = v
+    return merged

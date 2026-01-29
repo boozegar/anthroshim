@@ -6,7 +6,7 @@ import os
 import uuid
 import fnmatch
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import httpx
 import yaml
@@ -147,11 +147,25 @@ async def create_message(
     _log_json("anthropic.request", _scrub_payload(payload))
 
     key, base_url = _get_openai_config(x_openai_api_key, x_openai_api_url)
-    openai_req = convert_anthropic_to_openai_request(payload)
+    thinking_enabled, thinking_config = _thinking_config(payload)
+    _log_request_flags(request, thinking_enabled)
+    openai_req = convert_anthropic_to_openai_request(
+        payload, thinking_enabled=thinking_enabled, thinking_config=thinking_config
+    )
     mapped_model, mapped_extra = _map_model_and_extras(openai_req.get("model"))
     openai_req["model"] = mapped_model
+
     if isinstance(mapped_extra, dict) and mapped_extra:
         _deep_merge_inplace(openai_req, mapped_extra)
+    if thinking_enabled:
+        reasoning = _merge_reasoning(
+            openai_req.get("reasoning"),
+            thinking_config if isinstance(thinking_config, dict) else {},
+        )
+        if "summary" not in reasoning:
+            reasoning["summary"] = "auto"
+        if reasoning:
+            openai_req["reasoning"] = reasoning
     if not openai_req.get("model"):
         raise HTTPException(status_code=400, detail="Missing model")
 
@@ -168,7 +182,9 @@ async def create_message(
 
     client_stream = payload.get("stream") is True
     if client_stream:
-        return await _stream_openai_to_anthropic(url, headers, openai_req)
+        return await _stream_openai_to_anthropic(
+            url, headers, openai_req, thinking_enabled=thinking_enabled
+        )
 
     if openai_req.get("stream") is True:
         data = await _stream_openai_to_anthropic_message(url, headers, openai_req)
@@ -180,18 +196,30 @@ async def create_message(
             data = resp.json()
 
     _log_json("openai.response", _scrub_payload(data))
-    out = _openai_response_to_anthropic_message(data)
+    if thinking_enabled:
+        _log_upstream_reasoning_summary(data)
+    out = _openai_response_to_anthropic_message(data, thinking_enabled=thinking_enabled)
     _log_json("anthropic.response", _scrub_payload(out))
     return JSONResponse(out)
 
 
 async def _stream_openai_to_anthropic(
-    url: str, headers: Json, openai_req: Json
+    url: str,
+    headers: Json,
+    openai_req: Json,
+    *,
+    thinking_enabled: bool = False,
 ) -> StreamingResponse:
     openai_events = await _fetch_openai_stream_events(url, headers, openai_req)
     _log_json("openai.stream.events", openai_events)
+    if thinking_enabled:
+        _log_upstream_reasoning_summary_from_events(openai_events)
     anth_events = list(
-        iter_anthropic_events(openai_events, model=openai_req.get("model") or "unknown")
+        iter_anthropic_events(
+            openai_events,
+            model=openai_req.get("model") or "unknown",
+            keep_reasoning_summary=thinking_enabled,
+        )
     )
     _log_json("anthropic.stream.events", anth_events)
     return StreamingResponse(
@@ -340,16 +368,32 @@ def _parse_model_map_pairs(raw: str) -> Dict[str, str]:
     return {}
 
 
-def _openai_response_to_anthropic_message(resp: Json) -> Json:
+def _openai_response_to_anthropic_message(
+    resp: Json,
+    *,
+    thinking_enabled: bool = False,
+) -> Json:
     items = resp.get("output") if isinstance(resp, dict) else None
     if not isinstance(items, list):
         items = []
-    _, messages = openai_items_to_anthropic_messages(items, instructions=None)
+    _, messages = openai_items_to_anthropic_messages(
+        items, instructions=None, keep_reasoning_summary=thinking_enabled
+    )
 
     content = []
     for msg in messages:
         if msg.get("role") == "assistant":
             content.extend(msg.get("content") or [])
+    if thinking_enabled and not _content_has_thinking(content):
+        summary = _extract_reasoning_summary(resp, items)
+        if summary:
+            content.append(
+                {
+                    "type": "thinking",
+                    "thinking": summary,
+                    "signature": "",
+                }
+            )
 
     stop_reason = _openai_stop_reason(resp)
     usage = {}
@@ -417,3 +461,120 @@ def _log_json(label: str, data: Any) -> None:
         logger.info("%s %s", label, text)
     else:
         logger.debug("%s %s", label, text)
+
+
+def _log_request_flags(request: Request, thinking_enabled: bool) -> None:
+    client = request.client.host if request.client else "-"
+    path = request.url.path
+    query = request.url.query
+    if query:
+        path = f"{path}?{query}"
+    logger.info("request.flags client=%s path=%s thinking=%s", client, path, thinking_enabled)
+
+
+def _log_upstream_reasoning_summary(resp: Json) -> None:
+    summary = None
+    if isinstance(resp, dict):
+        rs = resp.get("reasoning_summary")
+        if isinstance(rs, str) and rs.strip():
+            summary = rs.strip()
+        elif isinstance(resp.get("output"), list):
+            summary = _extract_reasoning_summary(resp, resp.get("output") or [])
+    if summary:
+        logger.info("upstream.reasoning_summary %s", summary.replace("\n", " ").strip())
+    else:
+        logger.info("upstream.reasoning_summary <empty>")
+
+
+def _log_upstream_reasoning_summary_from_events(events: list[Json]) -> None:
+    summary = _extract_reasoning_summary_from_events(events)
+    if summary:
+        logger.info("upstream.reasoning_summary %s", summary.replace("\n", " ").strip())
+    else:
+        logger.info("upstream.reasoning_summary <empty>")
+
+
+def _extract_reasoning_summary_from_events(events: list[Json]) -> Optional[str]:
+    buf: List[str] = []
+    last_done = None
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        et = ev.get("type")
+        if not isinstance(et, str) or not et.startswith("response.reasoning_summary"):
+            continue
+        if et.endswith(".delta"):
+            delta = ev.get("delta")
+            if delta:
+                buf.append(str(delta))
+        elif et.endswith(".done"):
+            summary = ev.get("summary") or ev.get("text") or ev.get("delta")
+            if summary:
+                last_done = str(summary)
+    if last_done:
+        return last_done.strip() or None
+    if buf:
+        joined = "".join(buf).strip()
+        return joined or None
+    return None
+
+
+def _thinking_config(payload: Json) -> tuple[bool, Optional[Json]]:
+    raw = payload.get("thinking")
+    if raw is None:
+        return False, None
+    if isinstance(raw, bool):
+        return raw, None
+    if isinstance(raw, dict):
+        config: Dict[str, Any] = {}
+        effort = raw.get("effort")
+        if isinstance(effort, str) and effort:
+            config["effort"] = effort
+        summary = raw.get("summary")
+        if not summary:
+            summary = raw.get("generate_summary")
+        if isinstance(summary, str) and summary:
+            config["summary"] = summary
+        return True, config or None
+    return True, None
+
+
+def _merge_reasoning(existing: Any, updates: Any) -> Json:
+    if not isinstance(updates, dict) or not updates:
+        return existing if isinstance(existing, dict) else {}
+    if not isinstance(existing, dict) or not existing:
+        return dict(updates)
+    merged = dict(existing)
+    for k, v in updates.items():
+        if isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = _merge_reasoning(merged[k], v)
+        else:
+            merged[k] = v
+    return merged
+
+
+
+
+def _extract_reasoning_summary(resp: Json, items: list[Json]) -> Optional[str]:
+    summary = None
+    if isinstance(resp, dict):
+        rs = resp.get("reasoning_summary")
+        if isinstance(rs, str) and rs.strip():
+            summary = rs
+    if summary is None:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "reasoning":
+                continue
+            rs = item.get("summary") or item.get("text")
+            if isinstance(rs, str) and rs.strip():
+                summary = rs
+    return summary
+
+
+def _content_has_thinking(content: list[Json]) -> bool:
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "thinking":
+            return True
+    return False
