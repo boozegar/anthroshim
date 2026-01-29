@@ -5,9 +5,6 @@ import os
 import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
-from .config import AppConfig
-
-
 Json = Dict[str, Any]
 
 
@@ -76,11 +73,15 @@ def anthropic_messages_to_openai_items(messages: Iterable[Json]) -> List[Json]:
         for block in blocks:
             btype = block.get("type")
             if btype == "text":
-                cur_parts.append({"type": text_part_type, "text": str(block.get("text") or "")})
+                cur_parts.append(
+                    {"type": text_part_type, "text": str(block.get("text") or "")}
+                )
                 continue
 
             if btype == "image":
-                image_part_type = "output_image" if role == "assistant" else "input_image"
+                image_part_type = (
+                    "output_image" if role == "assistant" else "input_image"
+                )
                 part = _anthropic_image_to_openai_part(block, image_part_type)
                 if part is not None:
                     cur_parts.append(part)
@@ -97,7 +98,9 @@ def anthropic_messages_to_openai_items(messages: Iterable[Json]) -> List[Json]:
                 continue
 
             # Unknown block types become text for safety.
-            cur_parts.append({"type": text_part_type, "text": json.dumps(block, ensure_ascii=True)})
+            cur_parts.append(
+                {"type": text_part_type, "text": json.dumps(block, ensure_ascii=True)}
+            )
 
         flush_message()
 
@@ -227,7 +230,9 @@ def _anthropic_blocks_to_text(blocks: Iterable[Json]) -> str:
     return "".join(parts)
 
 
-def _anthropic_image_to_openai_part(block: Json, image_part_type: str = "input_image") -> Optional[Json]:
+def _anthropic_image_to_openai_part(
+    block: Json, image_part_type: str = "input_image"
+) -> Optional[Json]:
     source = _normalize_anthropic_image_source(block.get("source"))
     if not source:
         return None

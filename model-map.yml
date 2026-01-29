@@ -1,0 +1,8 @@
+# Bare model map. Keys support exact names and wildcards (*, ?).
+
+"claude-sonnet-4-5-20250929":
+  model: gpt-5.2-codex
+  reasoning:
+    effort: medium
+
+"*": gpt-5.2-codex
